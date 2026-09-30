@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-scfight_zb_extract_gcn.py - Extractor for DreamMix TV World Fighters (GameCube) "scfight.zb" archives.
+zb_extract.py - Extractor for DreamMix TV World Fighters ".zb" archives
+(GameCube: scfight.zb / PlayStation 2: SCFIGHT.ZB, IRXZ.ZB).
 
 Usage:
-    python scfight_zb_extract_gcn.py scfight.zb                 # extract to ./scfight/
-    python scfight_zb_extract_gcn.py scfight.zb -o out_dir      # extract to out_dir/
-    python scfight_zb_extract_gcn.py scfight.zb --list          # only print the file table
-    python scfight_zb_extract_gcn.py scfight.zb --keep-prefix   # keep the full /home/project/... path
+    python zb_extract.py scfight.zb                 # extract to ./scfight/
+    python zb_extract.py scfight.zb -o out_dir      # extract to out_dir/
+    python zb_extract.py scfight.zb --list          # only print the file table
+    python zb_extract.py scfight.zb --keep-prefix   # keep the full /home/project/... path
 
-No main.dol is needed: the TOC decryption algorithm and its constants were
+The GameCube and PS2 versions use the exact same archive format (big-endian
+on both consoles), so the same code handles both.
+
+No executable is needed: the TOC decryption algorithm and its constants were
 reverse-engineered from main.dol (GKWJ18, hi_fileio.c) and are embedded here.
 
 Archive layout (all integers big-endian)
@@ -47,7 +51,10 @@ import zlib
 
 MAGIC = 0x0131A36E
 HEADER_SIZE = 0x20
-DEFAULT_PREFIX = "/home/project/ScFight/GCN/"
+# Development path prefixes stripped by default.
+# GameCube: /home/project/ScFight/GCN/masterdata/...
+# PS2:      /home/project/ScFight/masterdata/...  and  /home/project/ScFight/program/modules/...
+DEFAULT_PREFIXES = ("/home/project/ScFight/GCN/", "/home/project/ScFight/")
 
 # LFSR constants (table at 0x80208688 in main.dol, entries 18..23)
 A_TAP1, A_TAP2, A_MASK = 0x0008, 0x4000, 0x7FFF
@@ -143,39 +150,44 @@ def read_toc(data):
     return entries
 
 
-def safe_relpath(path, prefix):
-    if prefix and path.startswith(prefix):
-        path = path[len(prefix):]
+def safe_relpath(path, prefixes):
+    for prefix in prefixes:
+        if path.startswith(prefix):
+            path = path[len(prefix):]
+            break
     parts = [p for p in path.replace("\\", "/").split("/") if p not in ("", ".", "..")]
     return os.path.join(*parts) if parts else None
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Extract DreamMix TV World Fighters (GC) scfight.zb archives.")
-    ap.add_argument("archive", help="path to scfight.zb")
+    ap = argparse.ArgumentParser(description="Extract DreamMix TV World Fighters .zb archives (GameCube and PS2).")
+    ap.add_argument("archive", help="path to the .zb archive (scfight.zb, SCFIGHT.ZB, IRXZ.ZB)")
     ap.add_argument("-o", "--output", help="output directory (default: <archive name> without extension)")
     ap.add_argument("-l", "--list", action="store_true", help="list files without extracting")
     ap.add_argument("--keep-prefix", action="store_true",
-                    help="keep the full original path (%s...)" % DEFAULT_PREFIX)
+                    help="keep the full original path (/home/project/ScFight/...)")
     args = ap.parse_args()
 
     with open(args.archive, "rb") as f:
         data = f.read()
 
     entries = read_toc(data)
-    prefix = None if args.keep_prefix else DEFAULT_PREFIX
+    prefixes = () if args.keep_prefix else DEFAULT_PREFIXES
 
     if args.list:
-        for e in entries:
-            print("%s  %10d  %10d  0x%08X  %s" % (
-                "z" if e["compressed"] else "-", e["raw_size"], e["stored_size"], e["offset"], e["path"]))
-        print("%d files" % len(entries))
+        try:
+            for e in entries:
+                print("%s  %10d  %10d  0x%08X  %s" % (
+                    "z" if e["compressed"] else "-", e["raw_size"], e["stored_size"], e["offset"], e["path"]))
+            print("%d files" % len(entries))
+        except BrokenPipeError:
+            pass
         return 0
 
     out_dir = args.output or os.path.splitext(os.path.basename(args.archive))[0]
     errors = 0
     for e in entries:
-        rel = safe_relpath(e["path"], prefix)
+        rel = safe_relpath(e["path"], prefixes)
         if rel is None:
             print("skip: empty path", file=sys.stderr)
             errors += 1
